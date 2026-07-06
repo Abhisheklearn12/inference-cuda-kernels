@@ -1,4 +1,4 @@
-# Inference Kernels CUDA
+# Inference CUDA Kernels
 
 Step-by-step optimized CUDA kernels for the core operations of LLM inference,
 written for and measured on an **NVIDIA RTX 3060 12GB** (Ampere GA106, sm_86).
