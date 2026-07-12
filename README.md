@@ -74,9 +74,18 @@ would trade exp/div accuracy for speed that a memory-bound kernel cannot use).
 ## Measured results
 
 All numbers below are from one `make run` on the card above (driver 535,
-CUDA 12.3). Expect a few percent run-to-run variation from GPU boost clocks,
-especially with a desktop session on the same GPU. Percentages are of the
-360.0 GB/s theoretical peak; ~92% is the practical DRAM ceiling of GDDR6.
+CUDA 12.3). Percentages are of the 360.0 GB/s theoretical peak; ~92% is the
+practical DRAM ceiling of GDDR6.
+
+A word on variance, because I re-ran everything to check my own tables:
+GEMV and softmax reproduce within 1 to 2 percent, but SiLU and attention
+came in 7 to 9 percent lower on a re-run with a desktop session using the
+same GPU (boost clocks and display work both eat into it). So treat the
+absolute GB/s cells as "what an idle card does", give or take that much.
+What does reproduce exactly, every run, is everything the tables are
+actually arguing: the orderings, the speedup ratios, which kernel wins,
+and the naive-to-optimized gaps. If you clone this on a 3060 you will see
+the same story, just not the same third digit.
 
 ### 1. GEMV `y[M] = A[M,K] x[K]`
 
@@ -114,8 +123,8 @@ computes both statistics, cutting row reads from 3 to 2 and giving the
 expected ~4/3 speedup over kernel 3. The same recurrence is what makes
 FlashAttention and kernel 3 of the attention op below possible. The
 M=32 case shows why per-row parallelism matters: 32 rows can only occupy 32
-threads in kernel 1 (0.2% of the GPU) but 32 blocks in kernels 3 and 4, a
-217x end-to-end speedup.
+threads in kernel 1 (0.2% of the GPU) but 32 blocks in kernels 3 and 4,
+roughly a 210x to 217x end-to-end speedup depending on the run.
 
 ### 3. RMSNorm on [M, N] with weight w[N]
 
@@ -127,7 +136,8 @@ threads in kernel 1 (0.2% of the GPU) but 32 blocks in kernels 3 and 4, a
 
 The M=1 column is time, not bandwidth: a single 4096-element row cannot fill
 a 360 GB/s bus, so what matters at decode time is latency, and the optimized
-kernel is 69x faster. The ~60% ceiling on the big shape comes from the norm
+kernel is around 60x to 70x faster (timings this small are noisy; the ratio
+moves between runs, the order never does). The ~60% ceiling on the big shape comes from the norm
 being two dependent passes (reduce, then scale) over rows that exceed what
 registers can hold, plus per-row reduction latency; a fused
 persistent-row kernel is the next step beyond this repo.
