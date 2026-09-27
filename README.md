@@ -16,19 +16,20 @@ optimized one:
 
 Every kernel is verified against a double-precision CPU reference on multiple
 shapes, including edge cases (size 1, sizes not divisible by 4, non-power-of-2
-sizes). Each runner exits nonzero if any check fails. All 161 checks pass on
+sizes). Each runner exits nonzero if any check fails. All 156 checks pass on
 the hardware below.
 
 A note on "100%": floating point kernels are never bit-identical to a
 reference; fp32 summation order changes the last bits of the result. Correct
 here means every output element matches the fp64 reference within a stated
 tolerance (see each runner; observed errors are typically 100 to 10000 times
-smaller than the tolerance). That is the same standard PyTorch and cuBLAS are
-held to.
+smaller than the tolerance, and never less than 10 times smaller). That is the
+same standard PyTorch and cuBLAS are held to.
 
-## The hardware (real numbers, printed by `./bin/device_info`)
+## The hardware (as reported by `./bin/device_info`)
 
-Measured on this exact card, not copied from a spec sheet:
+Queried from the driver on this exact card (output condensed; peak FP32 and
+peak bandwidth are derived from the reported clocks and bus width):
 
 ```
 Device 0: NVIDIA GeForce RTX 3060
@@ -68,24 +69,28 @@ make run        # runs everything: correctness + benchmarks
 ./bin/gemv 3    # one op, one kernel
 ```
 
-Requires CUDA 12.x. Built with `-O3 -arch=sm_86`, no `--use_fast_math` (it
+Builds with CUDA 12.x and 13.x. Built with `-O3 -arch=sm_86`, no `--use_fast_math` (it
 would trade exp/div accuracy for speed that a memory-bound kernel cannot use).
 
 ## Measured results
 
 All numbers below are from one `make run` on the card above (driver 535,
-CUDA 12.3). Percentages are of the 360.0 GB/s theoretical peak; ~92% is the
-practical DRAM ceiling of GDDR6.
+CUDA 12.3). A later re-run with driver 610 and CUDA 13.3 passes every check
+and lands within the variance described next. Percentages are of the
+360.0 GB/s theoretical peak; ~92% is the practical DRAM ceiling of GDDR6.
 
 A word on variance, because I re-ran everything to check my own tables:
-GEMV and softmax reproduce within 1 to 2 percent, but SiLU and attention
-came in 7 to 9 percent lower on a re-run with a desktop session using the
-same GPU (boost clocks and display work both eat into it). So treat the
-absolute GB/s cells as "what an idle card does", give or take that much.
-What does reproduce exactly, every run, is everything the tables are
-actually arguing: the orderings, the speedup ratios, which kernel wins,
-and the naive-to-optimized gaps. If you clone this on a 3060 you will see
-the same story, just not the same third digit.
+this card also drives a desktop, and any single GB/s cell typically moves
+about 10 percent between runs, occasionally up to 20 (boost clocks and
+display work both eat into it). What reproduces every run is the part the
+tables argue: the naive GEMV, softmax and RMSNorm kernels always sit far
+behind (2x to over 200x, depending on the op), softmax kernel 4 always wins,
+and attention always orders 1 < 2 < 3. What does not
+reproduce is the order among kernels that are already at the DRAM
+ceiling: GEMV kernels 2 to 5, the three SiLU kernels, and RMSNorm kernels
+2 and 3 are within a few percent of each other, and which one comes out
+on top changes from run to run. If you clone this on a 3060 you will see
+the same story, just not the same digits.
 
 ### 1. GEMV `y[M] = A[M,K] x[K]`
 
@@ -103,8 +108,8 @@ sector delivers 4 useful bytes. In kernel 2 the 32 lanes of a warp read 32
 consecutive elements of one row: 3x faster from that change alone. Kernels
 3 to 5 trade the last few percent back and forth because the bus is already
 saturated; this mirrors the diminishing-returns tail of every optimization
-series. The M=32000 shape is the vocabulary projection of a Llama-7B, at 1.6 ms
-per token for kernel 2+.
+series. The M=32000 shape is the vocabulary projection of a Llama-7B, at 1.6 to
+1.8 ms per token for kernels 2 to 5.
 
 ### 2. Row-wise safe softmax on [M, N]
 
@@ -119,12 +124,15 @@ Reported GB/s uses effective bytes (one read + one write per element), so the
 3-pass kernels are penalized for their extra reads: exactly the point. Kernel
 4 uses the online softmax recurrence (Milakov and Gimelshein 2018), merging
 running (max, sum) pairs with `s = s1*exp(m1-M) + s2*exp(m2-M)`; one pass
-computes both statistics, cutting row reads from 3 to 2 and giving the
-expected ~4/3 speedup over kernel 3. The same recurrence is what makes
+computes both statistics, cutting row reads from 3 to 2 for an expected
+speedup of up to 4/3 over kernel 3 (measured: 1.2x to 1.4x across runs).
+Nsight Compute confirms the traffic cut on the 4096x4096 shape: kernel 3
+reads 189 MB from DRAM (about 2.8 passes over the input; some re-reads hit
+cache), kernel 4 reads 132 MB (2.0 passes). The same recurrence is what makes
 FlashAttention and kernel 3 of the attention op below possible. The
 M=32 case shows why per-row parallelism matters: 32 rows can only occupy 32
-threads in kernel 1 (0.2% of the GPU) but 32 blocks in kernels 3 and 4,
-roughly a 210x to 217x end-to-end speedup depending on the run.
+threads in kernel 1 but 32 blocks in kernels 3 and 4, roughly a 200x to
+240x end-to-end speedup depending on the run.
 
 ### 3. RMSNorm on [M, N] with weight w[N]
 
@@ -137,10 +145,12 @@ roughly a 210x to 217x end-to-end speedup depending on the run.
 The M=1 column is time, not bandwidth: a single 4096-element row cannot fill
 a 360 GB/s bus, so what matters at decode time is latency, and the optimized
 kernel is around 60x to 70x faster (timings this small are noisy; the ratio
-moves between runs, the order never does). The ~60% ceiling on the big shape comes from the norm
-being two dependent passes (reduce, then scale) over rows that exceed what
-registers can hold, plus per-row reduction latency; a fused
-persistent-row kernel is the next step beyond this repo.
+moves between runs, the order never does). The ~60% on the big shape comes
+from the norm being two dependent passes (reduce, then scale): Nsight
+Compute shows the second pass re-reading the input from DRAM (197 MB of real
+traffic against 134 MB of effective bytes), so the DRAM bus itself is at
+about 93%. A fused persistent-row kernel that keeps each row on chip between
+the two passes is the next step beyond this repo.
 
 ### 4. SiLU elementwise, n = 67,108,864
 
@@ -152,8 +162,9 @@ persistent-row kernel is the next step beyond this repo.
 
 The honest lesson: a coalesced elementwise kernel is already optimal, and
 "optimizations" can lose. All three sit at the practical DRAM ceiling within
-noise, and float4 measures slightly slower here because wide accesses buy
-nothing when the scalar kernel already issues maximal DRAM traffic. (An
+noise, and which one comes out on top changes from run to run: wide float4
+accesses buy nothing when the scalar kernel already issues maximal DRAM
+traffic. (An
 earlier version launched kernel 3 with a small fixed grid, making each
 thread stride 8 MB between iterations; that cost 20% in DRAM locality. The
 launch now covers the data directly.)
@@ -162,20 +173,22 @@ launch now covers the data directly.)
 
 | # | Kernel | L=4096 | L=16384 |
 |---|--------|--------|---------|
-| 1 | naive: scores materialized in shared memory | 149.7 GB/s (42%) | cannot run (smem limit) |
+| 1 | naive: scores materialized in shared memory | 149.7 GB/s (42%) | cannot run (48 KiB smem limit) |
 | 2 | flash style: online softmax over tiles | 166.3 GB/s (46%) | 180.2 GB/s (50%) |
 | 3 | flash-decoding: split-KV + merge kernel | **302.5 GB/s (84%)** | **317.0 GB/s (88%)** |
 
 Kernel 1 stores all L scores in shared memory (three phases: scores, softmax,
-weighted V sum), which caps L at about 12k and dies at 48 KiB of smem. Kernel
+weighted V sum), which caps L at about 12k under the default 48 KiB dynamic
+smem limit (about 25k with the 99 KiB opt-in, which it does not request). Kernel
 2 processes the KV cache in tiles of 128 positions with a running rescaled
 accumulator, so the scores never exist in full: unbounded L, less smem, per-warp
 float4 dot products. But both launch only H=32 blocks for 28 SMs, so most of
 the GPU idles. Kernel 3 is flash-decoding (Dao et al. 2023): the sequence is
 additionally split 8 ways, each of the 256 blocks writes an unnormalized
 partial (m, s, acc[D]), and a tiny second kernel merges them with the online
-softmax rule. Occupancy is restored and bandwidth doubles: 2.0x faster than
-kernel 1 at L=4096, 0.44 ms per decoded token, at 84% of the theoretical peak.
+softmax rule. Occupancy is restored and bandwidth nearly doubles: 1.8x
+faster than kernel 2 and 2.0x faster than kernel 1 at L=4096, 0.44 ms per
+decoded token, at 84% of the theoretical peak.
 
 ## Repository layout
 
@@ -208,7 +221,8 @@ src/
 - Edge shapes are tested deliberately: size 1, dimensions not divisible by 4
   (exercising every vectorized kernel's scalar fallback and tail path),
   non-power-of-2 and prime-ish sizes, and rows/columns smaller than a block.
-- Benchmark shapes are re-verified once per kernel before timing.
+- Benchmark shapes are re-verified once per kernel before timing, also with
+  poisoned output buffers.
 - Timing uses CUDA events, warmup launches, and an iteration count auto-sized
   to a ~250 ms measurement window.
 

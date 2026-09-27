@@ -98,6 +98,7 @@ int main(int argc, char** argv) {
     rmsnorm_ref(hx, hw, href, s.M, s.N);
     printf("  M=%5d N=%5d\n", s.M, s.N);
     for (int id : ids) {
+      CUDA_CHECK(cudaMemset(dy, 0xFF, n * sizeof(float)));
       launch(id, dx, dw, dy, s.M, s.N);
       CUDA_CHECK(cudaMemcpy(hy, dy, n * sizeof(float), cudaMemcpyDeviceToHost));
       CheckResult r = check_close(hy, href, n, atol, rtol);

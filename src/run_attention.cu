@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
     attention_ref(hq, hK, hV, href, s.H, s.L, s.D, scale);
     printf("  H=%2d L=%5d D=%3d\n", s.H, s.L, s.D);
     for (int id : ids) {
+      CUDA_CHECK(cudaMemset(dout, 0xFF, n * sizeof(float)));
       if (!launch(id, dq, dK, dV, dout, s.H, s.L, s.D, scale)) {
         printf("    kernel %d: SKIP (smem limit, L too large)\n", id);
         continue;

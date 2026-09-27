@@ -8,8 +8,12 @@ int main() {
   cudaDeviceProp p;
   CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
 
-  double core_ghz = p.clockRate * 1e-6;           // boost clock
-  double mem_ghz = p.memoryClockRate * 1e-6;      // half the effective rate
+  // Clocks are queried as attributes: CUDA 13 removed them from cudaDeviceProp.
+  int clock_khz = 0, mem_khz = 0;
+  CUDA_CHECK(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, dev));
+  CUDA_CHECK(cudaDeviceGetAttribute(&mem_khz, cudaDevAttrMemoryClockRate, dev));
+  double core_ghz = clock_khz * 1e-6;             // boost clock
+  double mem_ghz = mem_khz * 1e-6;                // half the effective rate
   // GA10x (sm_86) has 128 fp32 CUDA cores per SM.
   int cores_per_sm = 128;
   int cores = cores_per_sm * p.multiProcessorCount;

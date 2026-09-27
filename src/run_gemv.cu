@@ -114,6 +114,7 @@ int main(int argc, char** argv) {
     gemv_ref(hA, hx, href, s.M, s.K);
     printf("  M=%5d K=%5d\n", s.M, s.K);
     for (int id : ids) {
+      CUDA_CHECK(cudaMemset(dy, 0xFF, (size_t)s.M * sizeof(float)));
       launch(id, dA, dx, dy, s.M, s.K);
       CUDA_CHECK(cudaMemcpy(hy, dy, (size_t)s.M * sizeof(float),
                             cudaMemcpyDeviceToHost));

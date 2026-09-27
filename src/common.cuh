@@ -155,12 +155,14 @@ inline float bench_ms(F&& f) {
   return total_ms / iters;
 }
 
-// Theoretical peak DRAM bandwidth in GB/s from device properties.
+// Theoretical peak DRAM bandwidth in GB/s from device attributes.
 // GDDR6 is double data rate: 2 * memory clock * bus width in bytes.
+// Queried as attributes because CUDA 13 removed cudaDeviceProp::memoryClockRate.
 inline double peak_bandwidth_gbs() {
-  cudaDeviceProp p;
-  CUDA_CHECK(cudaGetDeviceProperties(&p, 0));
-  return 2.0 * (double)p.memoryClockRate * 1e3 * (p.memoryBusWidth / 8.0) / 1e9;
+  int mem_khz = 0, bus_bits = 0;
+  CUDA_CHECK(cudaDeviceGetAttribute(&mem_khz, cudaDevAttrMemoryClockRate, 0));
+  CUDA_CHECK(cudaDeviceGetAttribute(&bus_bits, cudaDevAttrGlobalMemoryBusWidth, 0));
+  return 2.0 * (double)mem_khz * 1e3 * (bus_bits / 8.0) / 1e9;
 }
 
 inline void print_device_banner() {

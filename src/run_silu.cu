@@ -88,6 +88,7 @@ int main(int argc, char** argv) {
   printf("\n== benchmark (n = %lld) ==\n", bench_n);
   silu_ref(hx, href, bench_n);
   for (int id : ids) {
+    CUDA_CHECK(cudaMemset(dy, 0xFF, bench_n * sizeof(float)));
     launch(id, dx, dy, bench_n);
     CUDA_CHECK(cudaMemcpy(hy, dy, bench_n * sizeof(float),
                           cudaMemcpyDeviceToHost));
